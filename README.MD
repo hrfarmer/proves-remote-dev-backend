@@ -26,6 +26,7 @@ Then, copy `config_template.json`, name it `config.json`, and then fill out the 
 Next, navigate to https://github.com/settings/apps, create a new GitHub App named however you want, and then:
 
 - Copy `.env.template`, rename it to `.env`, and then fill out the Client ID and Secret with the ones from your GitHub App.
+- Copy the public link of your GitHub App and put it in `GITHUB_APP_URL` in the .env
 - Go to the `Identifying and authorizing users` section, set the Callback URL to `http://localhost:8000/auth`, and then check the `Request user authorization` box.
 - Scroll down to the save changes button and click it.
 

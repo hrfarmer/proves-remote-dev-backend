@@ -2,3 +2,4 @@ python-dotenv==1.1.0
 python-socketio==5.12.1
 pyserial == 3.5
 aiohttp==3.11.14
+PyJWT==2.8.0

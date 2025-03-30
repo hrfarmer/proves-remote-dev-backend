@@ -4,9 +4,11 @@ import hmac
 import json
 import os
 import subprocess
+import time
 
 import aiohttp
 import aiohttp.web_request
+import jwt
 import requests
 from aiohttp import web
 from dotenv import load_dotenv
@@ -16,12 +18,12 @@ load_dotenv()
 app = web.Application()
 routes = web.RouteTableDef()
 
-# Get auth information
+# Get JWT information
 try:
-    with open('auth.json', 'r', encoding='utf-8') as f:
-        auth_data = json.load(f)
+    with open('.jwt', 'r', encoding='utf-8') as f:
+        jwt_data = json.load(f)
 except FileNotFoundError:
-    print("Failed to load auth.json. Please run github_auth.py to authenticate.")
+    print("Failed to load .jwt. Please create a .jwt file with your GitHub App JWT token.")
     exit(1)
 
 # Load config.json and verify that it is valid and fields aren't empty
@@ -40,39 +42,38 @@ if config["repo_author"] == "" or config["repo_name"] == "" or config["check_nam
 queue = []
 
 async def refresh_github_token():
-    """Refresh the GitHub access token every hour."""
+    """Refresh the GitHub App JWT token every 8 minutes."""
     while True:
         try:
-            # Get new access token using refresh token
+            # Get installation access token using the JWT
             async with aiohttp.ClientSession() as session:
-                data = {
-                    "client_id": os.getenv("GITHUB_CLIENT_ID"),
-                    "client_secret": os.getenv("GITHUB_CLIENT_SECRET"),
-                    "refresh_token": auth_data["refresh_token"],
-                    "grant_type": "refresh_token"
+                headers = {
+                    "Authorization": f"Bearer {jwt_data['jwt']}",
+                    "Accept": "application/vnd.github+json"
                 }
-                headers = {"Accept": "application/json"}
                 
-                async with session.post("https://github.com/login/oauth/access_token", data=data, headers=headers) as response:
+                async with session.post(
+                    f"https://api.github.com/app/installations/{jwt_data['installation_id']}/access_tokens",
+                    headers=headers
+                ) as response:
+                    print(jwt_data)
                     token_data = await response.json()
+                    print(token_data)
                     
-                    if "access_token" in token_data:
-                        # Update auth.json with new tokens
-                        auth_data["access_token"] = token_data["access_token"]
-                        if "refresh_token" in token_data:
-                            auth_data["refresh_token"] = token_data["refresh_token"]
+                    if "token" in token_data:
+                        # Update JWT data with new token
+                        jwt_data["access_token"] = token_data["token"]
+                        with open('.jwt', 'w', encoding='utf-8') as f:
+                            json.dump(jwt_data, f, indent=2)
                         
-                        with open('auth.json', 'w', encoding='utf-8') as f:
-                            json.dump(auth_data, f, indent=2)
-                        
-                        print("Successfully refreshed GitHub access token")
+                        print("Successfully refreshed GitHub installation token")
                     else:
-                        print("Failed to refresh GitHub access token")
+                        print("Failed to refresh GitHub installation token")
         except Exception as e:
             print(f"Error refreshing GitHub token: {e}")
         
-        # Wait for 1 hour before next refresh
-        await asyncio.sleep(3600)  # 3600 seconds = 1 hour
+        # Wait for 8 minutes before next refresh (JWT expires in 10 minutes)
+        await asyncio.sleep(480)  # 480 seconds = 8 minutes
 
 async def queue_runner():
     while True:
@@ -143,7 +144,7 @@ def install_repo(url):
 
 def start_pr_check(head_sha):
     response = requests.post(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs", headers={
-        "Authorization": f"Bearer {os.getenv('GITHUB_ACCESS_TOKEN')}",
+        "Authorization": f"Bearer {jwt_data['access_token']}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={
@@ -156,7 +157,7 @@ def start_pr_check(head_sha):
 
 def fail_pr_check(check_run_id):
     response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {os.getenv('GITHUB_ACCESS_TOKEN')}",
+        "Authorization": f"Bearer {jwt_data['access_token']}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={"status": "completed", "conclusion": "failure"}, timeout=30)
@@ -164,7 +165,7 @@ def fail_pr_check(check_run_id):
 
 def finish_pr_check(check_run_id):
     response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {os.getenv('GITHUB_ACCESS_TOKEN')}",
+        "Authorization": f"Bearer {jwt_data['access_token']}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={"status": "completed", "conclusion": "success"}, timeout=30)

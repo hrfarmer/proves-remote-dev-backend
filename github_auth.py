@@ -14,7 +14,7 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
 REDIRECT_URI = "http://localhost:8000/auth"
 
 # GitHub OAuth endpoints
-AUTH_URL = "https://github.com/apps/proveskit-board-tester"
+GITHUB_APP_URL = os.getenv("GITHUB_APP_URL")
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 
 async def get_github_access_token(code: str) -> dict:
@@ -63,13 +63,13 @@ def main():
     # Print instructions
     print("\nGitHub OAuth Authentication")
     print("==========================")
-    print(f"1. Visit this URL to authorize the application:\n{AUTH_URL}")
+    print(f"1. Visit this URL to authorize the application:\n{GITHUB_APP_URL}")
     print("\n2. After authorizing, you'll be redirected back to this application.")
     print("3. Your access token will be saved to auth.json")
     print("\nStarting local server...")
     
     # Open the browser automatically
-    webbrowser.open(AUTH_URL)
+    webbrowser.open(GITHUB_APP_URL)
     
     # Create and run the web server
     app = web.Application()

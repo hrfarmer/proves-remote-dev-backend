@@ -4,11 +4,9 @@ import hmac
 import json
 import os
 import subprocess
-import time
 
 import aiohttp
 import aiohttp.web_request
-import jwt
 import requests
 from aiohttp import web
 from dotenv import load_dotenv
@@ -19,6 +17,8 @@ load_dotenv(".env")
 
 app = web.Application()
 routes = web.RouteTableDef()
+
+generate_jwt()
 
 with open('.jwt', 'r', encoding='utf-8') as d:
     jwt_data = json.load(d)
@@ -194,7 +194,6 @@ app.add_routes(routes)
 if __name__ == '__main__':
     # Create and run the queue runner task
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(generate_jwt())
     loop.create_task(queue_runner())
     loop.create_task(refresh_github_token())
 

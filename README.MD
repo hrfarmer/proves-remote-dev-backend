@@ -25,14 +25,11 @@ Then, copy `config_template.json`, name it `config.json`, and then fill out the 
 
 Next, navigate to https://github.com/settings/apps, create a new GitHub App named however you want, and then:
 
-- Copy `.env.template`, rename it to `.env`, and then fill out the Client ID and Secret with the ones from your GitHub App.
-- Copy the public link of your GitHub App and put it in `GITHUB_APP_URL` in the .env
-- Go to the `Identifying and authorizing users` section, set the Callback URL to `http://localhost:8000/auth`, and then check the `Request user authorization` box.
-- Scroll down to the save changes button and click it.
+- Copy `.env.template`, rename it to `.env`, and then fill out the Client ID with the one from your GitHub App, and fill out the org that owns the GitHub App.
+- Scroll down to `Private Keys`, generate & download your private key, rename it to `auth.pem`, and put it in the root directory of the project
+- Save your changes
 
-Then, run `github_auth.py` to authenticate with the [ProvesKit Board Tester](https://github.com/apps/proveskit-board-tester) GitHub App.
-
-Next, if you are going to host this on a local machine, download and setup [Ngrok](https://ngrok.com/), so that you can forward the port online for the GitHub webhook.
+If you are going to host this on a local machine, download and setup [Ngrok](https://ngrok.com/), so that you can forward the port online for the GitHub webhook.
 
 On the repository you want to setup the test for, go to `Settings -> Webhooks -> Add Webhook`. Then follow these steps:
 

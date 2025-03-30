@@ -4,6 +4,8 @@ import hmac
 import json
 import os
 import subprocess
+import threading
+import time
 
 import aiohttp
 import aiohttp.web_request
@@ -11,12 +13,15 @@ import requests
 from aiohttp import web
 from dotenv import load_dotenv
 
+from BoardManager import BoardManager
 from github_auth import generate_jwt
 
 load_dotenv(".env")
 
 app = web.Application()
 routes = web.RouteTableDef()
+
+board = BoardManager()
 
 generate_jwt()
 
@@ -150,7 +155,7 @@ def install_repo(install_data):
     # Install repository to board
     print(f"Installed {pr_data["title"]} to PROVES Kit")
 
-    finish_pr_check(install_data["action_id"], jwt_data["access_token"])
+    test_board(install_data["action_id"], jwt_data["access_token"])
 
 def queue_pr_check(head_sha, access_token):
     response = requests.post(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs", headers={
@@ -188,6 +193,55 @@ def finish_pr_check(check_run_id, access_token):
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={"status": "completed", "conclusion": "success"}, timeout=30)
     response.raise_for_status()
+
+def test_board(check_run_id, access_token):
+    msgs = []
+    timer_finished = False
+    success = False
+    stop_timer = False
+    
+    def callback(data):
+        nonlocal msgs
+        print(data)
+        msgs.append(data)
+    
+    def timer():
+        nonlocal timer_finished
+        timer_amt = 180
+        while timer_amt > 0 and not stop_timer:
+            time.sleep(1)
+            timer_amt -= 1
+        timer_finished = True
+    
+    # Start timer in a separate thread
+    timer_thread = threading.Thread(target=timer)
+    timer_thread.start()
+
+    board.set_data_callback(callback)
+
+    # Monitor board while timer has not finished
+    while not timer_finished:
+        if len(msgs) > 0:
+            msg = msgs.pop(0)
+            if "Setting Safe Sleep Mode" in msg.decode("utf-8"):
+                success = True
+                stop_timer = True
+                break
+
+            elif "Code done running." in msg.decode("utf-8"):
+                stop_timer = True
+                break
+
+        else:
+            time.sleep(0.01)
+
+    if success:
+        finish_pr_check(check_run_id, access_token)
+    else:
+        fail_pr_check(check_run_id, access_token)
+
+    timer_thread.join()
+    board.set_data_callback(None)
 
 app.add_routes(routes)
 

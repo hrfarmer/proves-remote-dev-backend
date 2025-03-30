@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from github_auth import generate_jwt
 
-load_dotenv()
+load_dotenv(".env")
 
 app = web.Application()
 routes = web.RouteTableDef()
@@ -82,6 +82,7 @@ async def queue_runner():
 def verify_signature(payload_body, secret_token, signature_header):
     if not signature_header:
         raise web.HTTPForbidden(reason="x-hub-signature-256 header is missing!")
+    print(secret_token)
     hash_object = hmac.new(secret_token.encode('utf-8'), msg=payload_body.encode('utf-8'), digestmod=hashlib.sha256)
     expected_signature = "sha256=" + hash_object.hexdigest()
     if not hmac.compare_digest(expected_signature, signature_header):
@@ -95,19 +96,25 @@ async def webhook(request: aiohttp.web_request.Request):
     data = await request.json()
     print(data)
 
-    response = requests.get(data["pull_request"]["url"], timeout=30)
+    if "created" not in data["action"] and "synchronize" not in data["action"]:
+        return web.json_response({"message": "Webhook received"})
+
+    try:
+        response = requests.get(data["pull_request"]["url"], timeout=30)
+    except:
+        pass
+
     response.raise_for_status()
     pr_data = response.json()
 
     action_id = queue_pr_check(pr_data["head"]["sha"], jwt_data["access_token"])
 
     try:
-        if action_id == "created" or action_id == "synchronize":
-            queue.append({
-                "url": data["pull_request"]["url"],
-                "action_id": action_id,
-                "pr_data": pr_data
-            })
+        queue.append({
+            "url": data["pull_request"]["url"],
+            "action_id": action_id,
+            "pr_data": pr_data
+        })
     except Exception as e:
         print(f"Error processing webhook: {e}")
 

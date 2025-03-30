@@ -1,13 +1,8 @@
 .venv/
+repos/
 .env
 .DS_Store
-auth.json
 config.json
-repos/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
 .jwt
+__pycache__/
+*.pem

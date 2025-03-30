@@ -13,18 +13,15 @@ import requests
 from aiohttp import web
 from dotenv import load_dotenv
 
+from github_auth import generate_jwt
+
 load_dotenv()
 
 app = web.Application()
 routes = web.RouteTableDef()
 
-# Get JWT information
-try:
-    with open('.jwt', 'r', encoding='utf-8') as f:
-        jwt_data = json.load(f)
-except FileNotFoundError:
-    print("Failed to load .jwt. Please create a .jwt file with your GitHub App JWT token.")
-    exit(1)
+with open('.jwt', 'r', encoding='utf-8') as d:
+    jwt_data = json.load(d)
 
 # Load config.json and verify that it is valid and fields aren't empty
 try:
@@ -56,9 +53,7 @@ async def refresh_github_token():
                     f"https://api.github.com/app/installations/{jwt_data['installation_id']}/access_tokens",
                     headers=headers
                 ) as response:
-                    print(jwt_data)
                     token_data = await response.json()
-                    print(token_data)
                     
                     if "token" in token_data:
                         # Update JWT data with new token
@@ -78,9 +73,9 @@ async def refresh_github_token():
 async def queue_runner():
     while True:
         if len(queue) > 0:
-            repo_path = queue.pop(0)
+            data = queue.pop(0)
             # Run install_repo in a background thread and wait for it to complete
-            await asyncio.to_thread(install_repo, repo_path)
+            await asyncio.to_thread(install_repo, data)
         else:
             await asyncio.sleep(1)
 
@@ -96,76 +91,92 @@ def verify_signature(payload_body, secret_token, signature_header):
 @routes.post("/webhook")
 async def webhook(request: aiohttp.web_request.Request):
     verify_signature(await request.text(), os.getenv("WEBHOOK_SECRET"), request.headers.get("x-hub-signature-256"))
-    print(await request.json())
 
     data = await request.json()
+    print(data)
+
+    response = requests.get(data["pull_request"]["url"], timeout=30)
+    response.raise_for_status()
+    pr_data = response.json()
+
+    action_id = queue_pr_check(pr_data["head"]["sha"], jwt_data["access_token"])
 
     try:
-        if data["action"] == "created" or data["action"] == "synchronize":
-            queue.append(data["pull_request"]["url"])
+        if action_id == "created" or action_id == "synchronize":
+            queue.append({
+                "url": data["pull_request"]["url"],
+                "action_id": action_id,
+                "pr_data": pr_data
+            })
     except Exception as e:
         print(f"Error processing webhook: {e}")
 
     return web.json_response({"message": "Webhook received"})
 
-def install_repo(url):
+def install_repo(install_data):
     # Get pull request data
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    data = response.json()
+    pr_data = install_data["pr_data"]
     
     try:
-        check_run_id = start_pr_check(data["head"]["sha"])
+        start_pr_check(install_data["action_id"], jwt_data["access_token"])
     except Exception as e:
         print(f"Failed to start PR check: {e}")
 
     # Pull the repository
-    repo_url = f"https://github.com/{data["head"]["repo"]["full_name"]}"
-    repo_branch = data["head"]["ref"]
+    repo_url = f"https://github.com/{pr_data["head"]["repo"]["full_name"]}"
+    repo_branch = pr_data["head"]["ref"]
 
-    repo_path = f"repos/{repo_branch}-{data['head']['sha']}"
+    repo_path = f"repos/{repo_branch}-{pr_data["head"]["sha"]}"
     if os.path.exists(repo_path):
         os.system(f"rm -rf {repo_path}")
     os.makedirs(repo_path)
 
     try:
         subprocess.run(["git", "clone", repo_url, repo_path], check=True)
-        subprocess.run(["git", "checkout", data["head"]["sha"]], cwd=repo_path, check=True)
+        subprocess.run(["git", "checkout", pr_data["head"]["sha"]], cwd=repo_path, check=True)
         subprocess.run(["make", "install", f"BOARD_MOUNT_POINT={config['board_mount_point']}"], cwd=repo_path, check=True)
     except subprocess.CalledProcessError as e:
         print(f"Failed to install repository to board: {e}")
-        fail_pr_check(check_run_id)
+        fail_pr_check(install_data["action_id"], jwt_data["access_token"])
         return
 
     # Install repository to board
-    print(f"Installed {data["title"]} to PROVES Kit")
+    print(f"Installed {pr_data["title"]} to PROVES Kit")
 
-    finish_pr_check(check_run_id)
+    finish_pr_check(install_data["action_id"], jwt_data["access_token"])
 
-def start_pr_check(head_sha):
+def queue_pr_check(head_sha, access_token):
     response = requests.post(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs", headers={
-        "Authorization": f"Bearer {jwt_data['access_token']}",
-        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json", 
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={
         "head_sha": head_sha,
         "name": config["check_name"],
-        "status": "in_progress"
+        "status": "queued"
     }, timeout=30)
     response.raise_for_status()
     return response.json()["id"]
 
-def fail_pr_check(check_run_id):
+def start_pr_check(check_run_id, access_token):
     response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {jwt_data['access_token']}",
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }, json={"status": "in_progress"}, timeout=30)
+    response.raise_for_status()
+
+def fail_pr_check(check_run_id, access_token):
+    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
+        "Authorization": f"Bearer {access_token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={"status": "completed", "conclusion": "failure"}, timeout=30)
     response.raise_for_status()
 
-def finish_pr_check(check_run_id):
+def finish_pr_check(check_run_id, access_token):
     response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {jwt_data['access_token']}",
+        "Authorization": f"Bearer {access_token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }, json={"status": "completed", "conclusion": "success"}, timeout=30)
@@ -176,7 +187,8 @@ app.add_routes(routes)
 if __name__ == '__main__':
     # Create and run the queue runner task
     loop = asyncio.get_event_loop()
+    loop.run_until_complete(generate_jwt())
     loop.create_task(queue_runner())
     loop.create_task(refresh_github_token())
 
-    web.run_app(app, loop=loop, host='0.0.0.0', port=int(os.getenv("PORT", 8000)))
+    web.run_app(app, loop=loop, host='0.0.0.0', port=8000)

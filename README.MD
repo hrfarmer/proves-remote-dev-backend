@@ -14,7 +14,7 @@ pip install -r requirements.txt
 
 Then, copy `config_template.json`, name it `config.json`, and then fill out the following fields:
 
-```json
+```jsonc
 {
   "repo_author": "", // The author of the repository (ex. proveskit)
   "repo_name": "", // The name of the repository (ex. CircuitPython_RP2040_v4)

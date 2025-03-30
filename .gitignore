@@ -1,1 +1,12 @@
 .venv/
+.env
+.DS_Store
+auth.json
+config.json
+repos/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz

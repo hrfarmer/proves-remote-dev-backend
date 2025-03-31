@@ -14,7 +14,7 @@ from aiohttp import web
 from dotenv import load_dotenv
 
 from BoardManager import BoardManager
-from github_auth import generate_jwt
+from github_auth import auth
 
 load_dotenv(".env")
 
@@ -22,8 +22,6 @@ app = web.Application()
 routes = web.RouteTableDef()
 
 board = BoardManager()
-
-generate_jwt()
 
 with open('.jwt', 'r', encoding='utf-8') as d:
     jwt_data = json.load(d)
@@ -46,32 +44,7 @@ queue = []
 async def refresh_github_token():
     """Refresh the GitHub App JWT token every 8 minutes."""
     while True:
-        try:
-            # Get installation access token using the JWT
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    "Authorization": f"Bearer {jwt_data['jwt']}",
-                    "Accept": "application/vnd.github+json"
-                }
-                
-                async with session.post(
-                    f"https://api.github.com/app/installations/{jwt_data['installation_id']}/access_tokens",
-                    headers=headers
-                ) as response:
-                    token_data = await response.json()
-                    
-                    if "token" in token_data:
-                        # Update JWT data with new token
-                        jwt_data["access_token"] = token_data["token"]
-                        with open('.jwt', 'w', encoding='utf-8') as f:
-                            json.dump(jwt_data, f, indent=2)
-                        
-                        print("Successfully refreshed GitHub installation token")
-                    else:
-                        print("Failed to refresh GitHub installation token")
-                        print(token_data)
-        except Exception as e:
-            print(f"Error refreshing GitHub token: {e}")
+        auth()
         
         # Wait for 8 minutes before next refresh (JWT expires in 10 minutes)
         await asyncio.sleep(480)  # 480 seconds = 8 minutes

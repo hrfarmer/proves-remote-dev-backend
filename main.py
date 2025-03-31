@@ -69,6 +69,7 @@ async def refresh_github_token():
                         print("Successfully refreshed GitHub installation token")
                     else:
                         print("Failed to refresh GitHub installation token")
+                        print(token_data)
         except Exception as e:
             print(f"Error refreshing GitHub token: {e}")
         

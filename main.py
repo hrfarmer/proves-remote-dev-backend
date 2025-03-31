@@ -220,6 +220,14 @@ def test_board(check_run_id, access_token):
 
     board.set_data_callback(callback)
 
+    # Try to reload board at start so there isn't any false positives
+    if not board.in_main:
+        board.send_data(b"\x04")
+    else:
+        board.send_data(b"\x03")
+        time.sleep(0.1)
+        board.send_data(b"\x04")
+
     # Monitor board while timer has not finished
     while not timer_finished:
         if len(msgs) > 0:
@@ -251,7 +259,7 @@ def test_board(check_run_id, access_token):
 app.add_routes(routes)
 
 if __name__ == '__main__':
-    # Create and run the queue runner task
+    # Create and run any constant tasks
     loop = asyncio.get_event_loop()
     loop.create_task(queue_runner())
     loop.create_task(refresh_github_token())

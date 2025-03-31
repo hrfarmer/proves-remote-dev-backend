@@ -18,6 +18,7 @@ class BoardManager:
         self.monitor_thread = None
         self.read_thread = None
         self.data_callback = None
+        self.in_main = True
         
         # Start monitoring thread
         self.monitor_thread = threading.Thread(target=self._monitor_connection, daemon=True)
@@ -59,6 +60,17 @@ class BoardManager:
                 if self.serial and self.serial.is_open:
                     if self.serial.in_waiting:
                         data = self.serial.read(self.serial.in_waiting)
+
+                        if "main.py output:" in data.decode("utf-8"):
+                            self.in_main = True
+                        elif "repl.py output:" in data.decode("utf-8"):
+                            self.in_main = False
+
+                        # Send board to repl if code crashes while there isn't an active test
+                        if "Code done running." in data.decode("utf-8") and not self.data_callback:
+                            self.send_data(b"\x04")
+                            self.in_main = False
+
                         if self.data_callback:
                             self.data_callback(data)
             except Exception:

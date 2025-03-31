@@ -65,6 +65,14 @@ class BoardManager:
                 self.is_connected = False
                 break
             time.sleep(0.01)  # Small delay to prevent CPU overuse
+    
+    def send_data(self, data):
+        """Send data to the board.
+        
+        Args:
+            data: The data to send to the board.
+        """
+        self.serial.write(data)
 
     def connect(self):
         """Establish connection with a PROVES Kit board.

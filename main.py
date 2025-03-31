@@ -197,8 +197,9 @@ def finish_pr_check(check_run_id, access_token):
 def test_board(check_run_id, access_token):
     msgs = []
     timer_finished = False
-    success = False
     stop_timer = False
+    success = False
+    tried_ctrl_d = False
     
     def callback(data):
         nonlocal msgs
@@ -229,8 +230,12 @@ def test_board(check_run_id, access_token):
                 break
 
             elif "Code done running." in msg.decode("utf-8"):
-                stop_timer = True
-                break
+                if not tried_ctrl_d:
+                    board.send_data(b"\x04")
+                    tried_ctrl_d = True
+                else:
+                    stop_timer = True
+                    break
 
         else:
             time.sleep(0.01)

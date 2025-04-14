@@ -9,12 +9,15 @@ import time
 
 import aiohttp
 import aiohttp.web_request
+import boto3
+import psycopg
 import requests
 from aiohttp import web
 from dotenv import load_dotenv
 
 from BoardManager import BoardManager
 from github_auth import auth
+from Logger import Logger
 
 load_dotenv(".env")
 
@@ -22,6 +25,8 @@ app = web.Application()
 routes = web.RouteTableDef()
 
 board = BoardManager()
+session = boto3.Session(region_name=os.getenv("AWS_REGION"))
+bucket = session.resource("s3").Bucket(os.getenv("AWS_BUCKET_NAME"))
 
 with open('.jwt', 'r', encoding='utf-8') as d:
     jwt_data = json.load(d)
@@ -41,11 +46,29 @@ if config["repo_author"] == "" or config["repo_name"] == "" or config["check_nam
 # Add initialization variables
 queue = []
 
+def run_process(command, logger: Logger, cwd=None):
+    process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    while process.poll() is None:
+        stdout_line = process.stdout.readline()
+        if stdout_line:
+            logger.info(stdout_line.rstrip())
+        stderr_line = process.stderr.readline()
+        if stderr_line:
+            logger.info(stderr_line.rstrip())
+
+    stdout, stderr = process.communicate()
+    if stdout:
+        logger.info(stdout.rstrip())
+    if stderr:
+        logger.info(stderr.rstrip())
+
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+
 async def refresh_github_token():
     """Refresh the GitHub App JWT token every 8 minutes."""
     while True:
         auth()
-        
         # Wait for 8 minutes before next refresh (JWT expires in 10 minutes)
         await asyncio.sleep(480)  # 480 seconds = 8 minutes
 
@@ -75,7 +98,7 @@ async def webhook(request: aiohttp.web_request.Request):
     data = await request.json()
     print(data)
 
-    if "created" not in data["action"] and "synchronize" not in data["action"]:
+    if "opened" not in data["action"] and "synchronize" not in data["action"]:
         return web.json_response({"message": "Webhook received"})
 
     try:
@@ -103,10 +126,22 @@ def install_repo(install_data):
     # Get pull request data
     pr_data = install_data["pr_data"]
     
+    # Make new logger
+    logger = Logger(bucket, install_data["action_id"])
+
+    try:
+        with psycopg.connect(os.getenv("DATABASE_URL")) as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO deployments (action_id, pr_name, pr_number, pr_repo, pr_author, pr_branch, pr_repo_owner, in_progress) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (install_data["action_id"], pr_data["title"], pr_data["number"], pr_data["head"]["repo"]["full_name"], pr_data["user"]["login"], pr_data["head"]["ref"], pr_data["head"]["repo"]["owner"]["login"], True))
+    
+    except Exception as e:
+        logger.error("Failed to add deployment to database", err=e)
+
     try:
         start_pr_check(install_data["action_id"], jwt_data["access_token"])
+        logger.info("Starting GitHub PR check")
     except Exception as e:
-        print(f"Failed to start PR check: {e}")
+        logger.error("Failed to start GitHub PR check", err=e)
 
     # Pull the repository
     repo_url = f"https://github.com/{pr_data["head"]["repo"]["full_name"]}"
@@ -117,58 +152,32 @@ def install_repo(install_data):
         os.system(f"rm -rf {repo_path}")
     os.makedirs(repo_path)
 
+    logger.info("Cloning repository")
     try:
-        subprocess.run(["git", "clone", repo_url, repo_path], check=True)
-        subprocess.run(["git", "checkout", pr_data["head"]["sha"]], cwd=repo_path, check=True)
-        subprocess.run(["make", "install", f"BOARD_MOUNT_POINT={config['board_mount_point']}"], cwd=repo_path, check=True)
+        run_process(["git", "clone", repo_url, repo_path], logger)
+        run_process(["git", "checkout", pr_data["head"]["sha"]], logger, cwd=repo_path)
+        run_process(["make", "install", f"BOARD_MOUNT_POINT={config['board_mount_point']}"], logger, cwd=repo_path)
     except subprocess.CalledProcessError as e:
-        print(f"Failed to install repository to board: {e}")
+        # Failed to install to board, end check & upload logs
+        logger.error("Failed to install repository to board", err=e)
         fail_pr_check(install_data["action_id"], jwt_data["access_token"])
+        logger.save()
+
+        try:
+            logger.upload_logs()
+            with psycopg.connect(os.getenv("DATABASE_URL")) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("UPDATE deployments SET success = %s, in_progress = %s WHERE action_id = %s", (False, False, str(install_data["action_id"])))
+        except Exception as e:
+            print(f"Failed to update deployment in database: {e}")
         return
 
     # Install repository to board
     print(f"Installed {pr_data["title"]} to PROVES Kit")
 
-    test_board(install_data["action_id"], jwt_data["access_token"])
+    test_board(install_data["action_id"], jwt_data["access_token"], logger)
 
-def queue_pr_check(head_sha, access_token):
-    response = requests.post(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs", headers={
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/vnd.github+json", 
-        "X-GitHub-Api-Version": "2022-11-28"
-    }, json={
-        "head_sha": head_sha,
-        "name": config["check_name"],
-        "status": "queued"
-    }, timeout=30)
-    response.raise_for_status()
-    return response.json()["id"]
-
-def start_pr_check(check_run_id, access_token):
-    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }, json={"status": "in_progress"}, timeout=30)
-    response.raise_for_status()
-
-def fail_pr_check(check_run_id, access_token):
-    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }, json={"status": "completed", "conclusion": "failure"}, timeout=30)
-    response.raise_for_status()
-
-def finish_pr_check(check_run_id, access_token):
-    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-    }, json={"status": "completed", "conclusion": "success"}, timeout=30)
-    response.raise_for_status()
-
-def test_board(check_run_id, access_token):
+def test_board(check_run_id, access_token, logger: Logger):
     msgs = []
     timer_finished = False
     stop_timer = False
@@ -177,7 +186,7 @@ def test_board(check_run_id, access_token):
     
     def callback(data):
         nonlocal msgs
-        print(data)
+        logger.info(data.decode("utf-8"))
         msgs.append(data)
     
     def timer():
@@ -205,13 +214,13 @@ def test_board(check_run_id, access_token):
     # Monitor board while timer has not finished
     while not timer_finished:
         if len(msgs) > 0:
-            msg = msgs.pop(0)
-            if "Setting Safe Sleep Mode" in msg.decode("utf-8"):
+            msg = msgs.pop(0).decode("utf-8")
+            if "Setting Safe Sleep Mode" in msg:
                 success = True
                 stop_timer = True
                 break
 
-            elif "Code done running." in msg.decode("utf-8"):
+            elif "Code done running." in msg:
                 if not tried_ctrl_d:
                     board.send_data(b"\x04")
                     tried_ctrl_d = True
@@ -230,9 +239,70 @@ def test_board(check_run_id, access_token):
     timer_thread.join()
     board.set_data_callback(None)
 
+    logger.info("PR check completed", success=success, error_count=logger.get_error_count())
+    logger.save()
+
+    try:
+        logger.upload_logs()
+        with psycopg.connect(os.getenv("DATABASE_URL")) as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE deployments SET success = %s, in_progress = %s WHERE action_id = %s", (success, False, str(check_run_id)))
+    except Exception as e:
+        print(f"Failed to update deployment in database: {e}")
+
+def queue_pr_check(head_sha, access_token):
+    response = requests.post(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs", headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json", 
+        "X-GitHub-Api-Version": "2022-11-28"
+    }, json={
+        "head_sha": head_sha,
+        "name": config["check_name"],
+        "status": "queued"
+    }, timeout=30)
+    response.raise_for_status()
+
+    # Update check run with frontend url
+    requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{response.json()['id']}", headers={
+    "Authorization": f"Bearer {access_token}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+    }, json={"details_url": f"{os.getenv('FRONTEND_URL')}/d/{response.json()["id"]}"}, timeout=30).raise_for_status()
+
+    return response.json()["id"]
+
+def start_pr_check(check_run_id, access_token):
+    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }, json={"status": "in_progress"}, timeout=30)
+    response.raise_for_status()
+
+def fail_pr_check(check_run_id, access_token):
+    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }, json={"status": "completed", "conclusion": "failure"}, timeout=30)
+    response.raise_for_status()
+
+def finish_pr_check(check_run_id, access_token):
+    response = requests.patch(f"https://api.github.com/repos/{config['repo_author']}/{config['repo_name']}/check-runs/{check_run_id}", headers={
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }, json={"status": "completed", "conclusion": "success"}, timeout=30)
+    response.raise_for_status()
+
 app.add_routes(routes)
 
 if __name__ == '__main__':
+    # Delete all existing repos to save space
+    if os.path.exists("repos"):
+        for repo in os.listdir("repos"):
+            os.system(f"rm -rf {repo}")
+
     # Create and run any constant tasks
     loop = asyncio.get_event_loop()
     loop.create_task(queue_runner())
